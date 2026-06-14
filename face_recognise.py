@@ -3,6 +3,8 @@ import face_recognition
 import os
 import numpy as np
 
+from collections import Counter, deque
+
 KNOWN_FACE_DIR = "images/known_faces"
 
 known_encodings = []
@@ -33,8 +35,27 @@ for person_name in os.listdir(KNOWN_FACE_DIR):
 print(f"Loaded {len(known_encodings)} known face encodings")
 
 cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 process_this_frame = True
+face_locations = []
+face_names = []
+
+recent_names = deque(maxlen=5)
+
+def get_stable_name(recent_names):
+    if len(recent_names) == 0:
+        return "Unknown"
+
+    name_counts = Counter(recent_names)
+    most_common_name, count = name_counts.most_common(1)[0]
+
+    # Require at least 3 out of the last 5 frames to agree
+    if count >= 3:
+        return most_common_name
+
+    return "Unknown"
 
 while True:
     ret, frame = cap.read()
@@ -72,7 +93,9 @@ while True:
                 if best_distance < 0.5:
                     name = known_names[best_match_index]
 
-            face_names.append(name)
+            recent_names.append(name)
+            stable_name = get_stable_name(recent_names)
+            face_names.append(stable_name)
 
     # Only process every other frame
     process_this_frame = not process_this_frame
