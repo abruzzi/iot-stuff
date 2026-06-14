@@ -1,6 +1,7 @@
 opencv-python
 matplotlib
 mediapipe==0.10.14
+face_recognition
 pyserial
 jax==0.4.30
 jaxlib==0.4.30
