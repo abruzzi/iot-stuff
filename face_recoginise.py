@@ -1,36 +1,35 @@
 import cv2
 
-imagePath = 'images/rollback-in-production.jpg'
-
-img = cv2.imread(imagePath)
-
-print(img.shape)
-
-gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-print(gray_img.shape)
-
 face_classifier = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
-faces = face_classifier.detectMultiScale(
-    gray_img, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40)
-)
+def detect_face_from_frame(frame):
+    gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-print(faces)
+    faces = face_classifier.detectMultiScale(
+        gray_img, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40)
+    )
 
-for (x, y, w, h) in faces:
-    cv2.rectangle(img, (x, y), (x + w, y + h), (80, 48, 230), 4)
+    for (x, y, w, h) in faces:
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (80, 48, 230), 4)
 
-img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    return faces
 
-print(img_rgb.shape)
+video_capture = cv2.VideoCapture(0)
 
-import matplotlib.pyplot as plt
+while True:
+    ret, frame = video_capture.read()
 
-plt.figure(figsize=(20,10))
-plt.imshow(img_rgb)
-plt.axis('off')
+    if ret is False:
+        break
 
-plt.show()
+    faces = detect_face_from_frame(frame)
+
+    cv2.imshow('cameraman', frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+video_capture.release()
+cv2.destroyAllWindows()
