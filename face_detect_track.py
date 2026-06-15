@@ -55,6 +55,8 @@ def calculate_pan_angle(horizontal_distance, frame_width):
 
     return DIRECTION * angle_deg
 
+def send_pan_delta(delta):
+    send_command(f"PAN:{delta}")
 
 def detect_face_from_frame(frame):
     rgb_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -81,23 +83,18 @@ def detect_face_from_frame(frame):
 
             horizontal_distance = x+int(w/2) - int(w_img/2)
 
-            if(horizontal_distance > DEAD_ZONE):
-                # print("move to right --->")
-                send_command('RIGHT')
-            elif(horizontal_distance < -DEAD_ZONE):
-                # print("<--- move to left")
-                send_command('LEFT')
+            angle_to_move = calculate_pan_angle(horizontal_distance, w_img)
+
+            if abs(horizontal_distance) <= DEAD_ZONE:
+                print("center")
             else:
-                send_command('CENTER')
+                pan_delta = round(angle_to_move)
 
-            # angle_to_move = calculate_pan_angle(horizontal_distance, w_img)
+                # Limit each movement so the servo does not jump too much
+                pan_delta = max(min(pan_delta, 10), -10)
 
-            # if abs(horizontal_distance) <= DEAD_ZONE:
-            #     print("center")
-            # else:
-            #     print(f"angle to move: {angle_to_move:.2f}°")
-
-            # print('distance to move: ', horizontal_distance)
+                send_command(f"PAN:{pan_delta}")
+                print(f"angle to move: {angle_to_move:.2f}°, pan delta: {pan_delta}°")
 
             cv2.circle(frame, (x+int(w/2), int(h_img/2)), 2, (0, 0, 255), 2)
             cv2.rectangle(frame, (x, y), (x + w, y + h), (80, 48, 230), 2)
