@@ -21,10 +21,17 @@ def is_face_stably_detected(recent_face_detections):
 
 CAMERA_HORIZONTAL_FOV = 90
 DEAD_ZONE = 30
+ANGLE_DEAD_ZONE = 3
+SMOOTHING_ALPHA = 0.3
+
 DIRECTION = 1
+KP = 0.25
+MAX_STEP_DEG = 3
 
 last_sent_time = 0
-SEND_INTERVAL = 0.2
+SEND_INTERVAL = 0.25
+
+smoothed_face_x = None
 
 def send_command(command):
     global last_sent_time
@@ -58,13 +65,27 @@ def calculate_pan_angle(horizontal_distance, frame_width):
 def send_pan_delta(delta):
     send_command(f"PAN:{delta}")
 
+def get_largest_detection(detections, frame_width, frame_height):
+    def area(detection):
+        bbox = detection.location_data.relative_bounding_box
+        w = bbox.width * frame_width
+        h = bbox.height * frame_height
+        return w * h
+
+    return max(detections, key=area)
+
 def detect_face_from_frame(frame):
+    global smoothed_face_x
+
     rgb_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     results = face_detection.process(rgb_img)
 
     h_img, w_img, _ = frame.shape
-    cv2.circle(frame, (int(w_img/2), int(h_img/2)), 2, (0, 255, 0), 2)
+    frame_center_x = int(w_img / 2)
+    frame_center_y = int(h_img / 2)
+
+    cv2.circle(frame, (frame_center_x, frame_center_y), 2, (0, 255, 0), 2)
 
     face_detected = bool(results.detections)
     recent_face_detections.append(face_detected)
@@ -74,31 +95,40 @@ def detect_face_from_frame(frame):
         return frame
 
     if results.detections:
-        for detection in results.detections:
-            bboxC = detection.location_data.relative_bounding_box
-            x = int(bboxC.xmin * w_img)
-            y = int(bboxC.ymin * h_img)
-            w = int(bboxC.width * w_img)
-            h = int(bboxC.height * h_img)
+        detection = get_largest_detection(results.detections, w_img, h_img)
+        bboxC = detection.location_data.relative_bounding_box
+        x = int(bboxC.xmin * w_img)
+        y = int(bboxC.ymin * h_img)
+        w = int(bboxC.width * w_img)
+        h = int(bboxC.height * h_img)
 
-            horizontal_distance = x+int(w/2) - int(w_img/2)
+        face_center_x = x + int(w / 2)
 
-            angle_to_move = calculate_pan_angle(horizontal_distance, w_img)
+        if smoothed_face_x is None:
+            smoothed_face_x = face_center_x
+        else:
+            smoothed_face_x = (
+                SMOOTHING_ALPHA * face_center_x
+                + (1 - SMOOTHING_ALPHA) * smoothed_face_x
+            )
+            
+        horizontal_distance = smoothed_face_x - frame_center_x
 
-            if abs(horizontal_distance) <= DEAD_ZONE:
-                print("center")
-            else:
-                pan_delta = round(angle_to_move)
+        angle_to_move = calculate_pan_angle(horizontal_distance, w_img)
 
-                # Limit each movement so the servo does not jump too much
-                pan_delta = max(min(pan_delta, 10), -10)
+        if abs(angle_to_move) <= ANGLE_DEAD_ZONE:
+            print("center")
+        else:
+            pan_delta = round(angle_to_move * KP)
 
-                send_command(f"PAN:{pan_delta}")
-                print(f"angle to move: {angle_to_move:.2f}°, pan delta: {pan_delta}°")
+            # Limit each movement so the servo does not jump too much
+            pan_delta = max(min(pan_delta, MAX_STEP_DEG), -MAX_STEP_DEG)
 
-            cv2.circle(frame, (x+int(w/2), int(h_img/2)), 2, (0, 0, 255), 2)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (80, 48, 230), 2)
+            send_command(f"PAN:{pan_delta}")
+            print(f"angle to move: {angle_to_move:.2f}°, pan delta: {pan_delta}°")
 
+        cv2.circle(frame, (int(smoothed_face_x), frame_center_y), 2, (0, 0, 255), 2)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (80, 48, 230), 2)
     
     return frame
 
