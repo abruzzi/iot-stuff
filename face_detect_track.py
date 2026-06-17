@@ -11,7 +11,10 @@ face_detection = mp_face_detection.FaceDetection(model_selection=0, min_detectio
 
 recent_face_detections = deque(maxlen=5)
 
-arduino = serial.Serial('/dev/cu.usbmodem11301', 9600, timeout=1)
+# update this later
+SERIES_BAUD=115200
+
+arduino = serial.Serial('/dev/cu.usbmodem11101', 9600, timeout=1)
 time.sleep(2)
 
 arduino.reset_input_buffer()
@@ -25,11 +28,11 @@ ANGLE_DEAD_ZONE = 3
 SMOOTHING_ALPHA = 0.3
 
 DIRECTION = 1
-KP = 0.25
-MAX_STEP_DEG = 3
+KP = 0.5
+MAX_STEP_DEG = 5
 
 last_sent_time = 0
-SEND_INTERVAL = 0.25
+SEND_INTERVAL = 0.05
 
 smoothed_face_x = None
 
@@ -49,9 +52,12 @@ def send_command(command):
 
     time.sleep(0.05)
 
-    while arduino.in_waiting > 0:
-        line = arduino.readline().decode("utf-8", errors="ignore").strip()
-        print("arduino:", line)  
+    if arduino.in_waiting > 0:
+        try:
+            line = arduino.readline().decode("utf-8", errors="ignore").strip()
+            print("arduino:", line)
+        except Exception:
+            pass
 
 def calculate_pan_angle(horizontal_distance, frame_width):
     horizontal_fov_rad = math.radians(CAMERA_HORIZONTAL_FOV)
