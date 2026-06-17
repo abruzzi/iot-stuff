@@ -8,12 +8,12 @@ import time
 import requests
 import json
 
-# SERIES_BAUD=115200
+SERIES_BAUD=115200
 
-# arduino = serial.Serial('/dev/cu.usbmodem11101', SERIES_BAUD, timeout=1)
-# time.sleep(2)
+arduino = serial.Serial('/dev/cu.usbmodem21201', SERIES_BAUD, timeout=1)
+time.sleep(2)
 
-# arduino.reset_input_buffer()
+arduino.reset_input_buffer()
 
 def normalise_buffer(text):
     return " ".join(
@@ -63,15 +63,17 @@ def send_message(event):
     print(f"[{l2}]")
     print()
 
-    # arduino.write("{command}".encode('utf-8'))
-    # arduino.flush()
+    time.sleep(1)
 
-    # if arduino.in_waiting > 0:
-    #     try:
-    #         line = arduino.readline().decode("utf-8", errors="ignore").strip()
-    #         print("arduino:", line)
-    #     except Exception:
-    #         pass
+    arduino.write(f"LCD:{l1}|{l2}\n".encode('utf-8'))
+    arduino.flush()
+
+    if arduino.in_waiting > 0:
+        try:
+            line = arduino.readline().decode("utf-8", errors="ignore").strip()
+            print("arduino:", line)
+        except Exception:
+            pass
 
 
 url = "http://127.0.0.1:8788/api/stream"

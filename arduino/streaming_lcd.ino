@@ -8,43 +8,50 @@ void setup() {
   lcd.backlight();
 
   Serial.begin(115200);
+}
 
-  panServo.attach(9);
-  panServo.write(servoAngle);
+String fitLine(String text) {
+  if(text.length() > 16) {
+    return text.substring(0, 16);
+  }
 
-  Serial.println("Arduino ready");
+  while(text.length() < 16) {
+    text += " ";
+  }
+
+  return text;
+}
+
+void renderFrame(String line1, String line2) {
+  lcd.setCursor(0, 0);
+  lcd.print(fitLine(line1));
+
+  lcd.setCursor(0, 1);
+  lcd.print(fitLine(line2));
+}
+
+void handleMessage(String message) {
+  if(!message.startsWith("LCD:")) {
+    return;
+  }
+
+  String payload = message.substring(4);
+
+  int index = payload.indexOf("|");
+  if(index < 0) {
+    return;
+  }
+
+  String l1 = payload.substring(0, index);
+  String l2 = payload.substring(index+1);
+
+  renderFrame(l1, l2);
 }
 
 void loop() {
   if(Serial.available() > 0) {
-    String command = Serial.readStringUntil('\n');
-    command.trim();
-
-    if(command == "LEFT") {
-      servoAngle += 2;
-    } else if (command == "RIGHT") {
-      servoAngle -= 2;
-    } else if (command == "CENTER") {
-      // do nothing 
-    } else if (command.startsWith("PAN:")) {
-      int delta = command.substring(4).toInt();
-
-      servoAngle += delta;
-      servoAngle = constrain(servoAngle, 0, 180);
-
-      panServo.write(servoAngle);
-
-      Serial.print("Servo angle: ");
-      Serial.println(servoAngle);    
-    } else {
-      Serial.print("Unknown command: ");
-      Serial.println(command);
-    }
-
-    servoAngle = constrain(servoAngle, 0, 180);
-    panServo.write(servoAngle);
-
-    Serial.print("servo angle: ");
-    Serial.println(servoAngle);
+    String message = Serial.readStringUntil('\n');
+    message.trim();
+    handleMessage(message);
   }
 }
