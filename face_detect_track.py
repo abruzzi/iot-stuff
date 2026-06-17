@@ -27,13 +27,20 @@ ANGLE_DEAD_ZONE = 7
 SMOOTHING_ALPHA = 0.3
 
 DIRECTION = -1
-KP = 0.5
+
+KP = 0.45
+KD = 0.03
+
 MAX_STEP_DEG = 5
+MIN_STEP_DEG = 1
 
 last_sent_time = 0
-SEND_INTERVAL = 0.1
+SEND_INTERVAL = 0.08
 
 smoothed_face_x = None
+
+last_angle_error = None
+last_error_time = None
 
 def send_command(command):
     global last_sent_time
@@ -79,6 +86,56 @@ def get_largest_detection(detections, frame_width, frame_height):
 
     return max(detections, key=area)
 
+def reset_pd_controller():
+    global last_angle_error, last_error_time
+
+    last_angle_error = None
+    last_error_time = None
+
+
+def calculate_pan_delta_pd(angle_error):
+    global last_angle_error, last_error_time
+
+    now = time.time()
+
+    if last_angle_error is None or last_error_time is None:
+        last_angle_error = angle_error
+        last_error_time = now
+
+        # First frame: use only P term
+        output = KP * angle_error
+    else:
+        dt = now - last_error_time
+
+        if dt <= 0:
+            return 0
+
+        error_velocity = (angle_error - last_angle_error) / dt
+
+        p_term = KP * angle_error
+        d_term = KD * error_velocity
+
+        output = p_term + d_term
+
+        last_angle_error = angle_error
+        last_error_time = now
+
+    pan_delta = round(output)
+
+    # If the output is too small, don't move.
+    # This prevents tiny commands like PAN:0 or weak back-and-forth movement.
+    if pan_delta == 0:
+        return 0
+
+    # Limit the maximum movement per command.
+    pan_delta = max(min(pan_delta, MAX_STEP_DEG), -MAX_STEP_DEG)
+
+    # # Optional: make sure every real movement is at least 1 degree.
+    # if abs(pan_delta) < MIN_STEP_DEG:
+    #     pan_delta = MIN_STEP_DEG if pan_delta > 0 else -MIN_STEP_DEG
+
+    return pan_delta
+
 def detect_face_from_frame(frame):
     global smoothed_face_x
 
@@ -122,14 +179,14 @@ def detect_face_from_frame(frame):
         angle_to_move = calculate_pan_angle(horizontal_distance, w_img)
 
         if abs(angle_to_move) <= ANGLE_DEAD_ZONE:
+            reset_pd_controller()
             print("center")
         else:
-            pan_delta = round(angle_to_move * KP)
+            pan_delta = calculate_pan_delta_pd(angle_to_move)
 
-            # Limit each movement so the servo does not jump too much
-            pan_delta = max(min(pan_delta, MAX_STEP_DEG), -MAX_STEP_DEG)
-
-            send_command(f"PAN:{pan_delta}")
+            if pan_delta != 0:
+                send_command(f"PAN:{pan_delta}")
+            
             print(f"angle to move: {angle_to_move:.2f}°, pan delta: {pan_delta}°")
 
         cv2.circle(frame, (int(smoothed_face_x), frame_center_y), 2, (0, 0, 255), 2)
