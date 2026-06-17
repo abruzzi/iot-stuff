@@ -14,7 +14,7 @@ recent_face_detections = deque(maxlen=5)
 # update this later
 SERIES_BAUD=115200
 
-arduino = serial.Serial('/dev/cu.usbmodem11101', 9600, timeout=1)
+arduino = serial.Serial('/dev/cu.usbmodem21201', 9600, timeout=1)
 time.sleep(2)
 
 arduino.reset_input_buffer()
@@ -23,16 +23,15 @@ def is_face_stably_detected(recent_face_detections):
     return sum(recent_face_detections) >= 3
 
 CAMERA_HORIZONTAL_FOV = 90
-DEAD_ZONE = 30
-ANGLE_DEAD_ZONE = 3
+ANGLE_DEAD_ZONE = 7
 SMOOTHING_ALPHA = 0.3
 
-DIRECTION = 1
+DIRECTION = -1
 KP = 0.5
 MAX_STEP_DEG = 5
 
 last_sent_time = 0
-SEND_INTERVAL = 0.05
+SEND_INTERVAL = 0.1
 
 smoothed_face_x = None
 
