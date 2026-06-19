@@ -1,18 +1,27 @@
 #include <Servo.h>
 
 Servo panServo;
+Servo tiltServo;
 
-const int SERVO_PIN = 9;
-int servoAngle = 90;
-const int step = 10;
+const int PAN_SERVO_PIN = 9;
+const int TILT_SERVO_PIN = 10;
+
+int panServoAngle = 90;
+int tiltServoAngle = 90;
+
+const int panStep = 5;
+const int tiltStep = 5;
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
 
-  panServo.attach(SERVO_PIN);
-  panServo.write(servoAngle);
+  panServo.attach(PAN_SERVO_PIN);
+  panServo.write(panServoAngle);
 
-  Serial.println("Arduino ready");
+  tiltServo.attach(TILT_SERVO_PIN);
+  tiltServo.write(tiltServoAngle);  
+
+  Serial.println("Cameraman ready");
 }
 
 void loop() {
@@ -24,25 +33,36 @@ void loop() {
     Serial.println(command);
 
     if(command == "LEFT") {
-      servoAngle += step;
+      panServoAngle += panStep;
     } else if (command == "RIGHT") {
-      servoAngle -= step;
+      panServoAngle -= panStep;
+    } else if (command == "UP") {
+      tiltServoAngle += tiltStep;
+    } else if (command == "DOWN") {
+      tiltServoAngle -= tiltStep;
     } else if (command == "CENTER") {
       // do nothing 
     } else if (command.startsWith("PAN:")) {
       int delta = command.substring(4).toInt();
-
-      servoAngle += delta;
+      panServoAngle += delta;
+    } else if (command.startsWith("TILT:")) {
+      int delta = command.substring(5).toInt();
+      tiltServoAngle += delta;
     } else {
       Serial.print("Unknown command: ");
       Serial.println(command);
     }
 
-    servoAngle = constrain(servoAngle, 30, 150);
+    panServoAngle = constrain(panServoAngle, 45, 135);
+    tiltServoAngle = constrain(tiltServoAngle, 60, 120);
 
-    panServo.write(servoAngle);
+    panServo.write(panServoAngle);
+    tiltServo.write(tiltServoAngle);
 
-    Serial.print("Servo angle: ");
-    Serial.println(servoAngle); 
+    Serial.print("Pan Servo angle: ");
+    Serial.println(panServoAngle);
+
+    Serial.print("Tilt Servo angle: ");
+    Serial.println(tiltServoAngle);
   }
 }
