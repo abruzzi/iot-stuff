@@ -78,7 +78,7 @@ def send_message(event):
 
 url = "http://127.0.0.1:8788/api/stream"
 
-def get_response():
+def streaming_display():
     # curl -N -X POST http://127.0.0.1:8788/api/stream -H "Content-Type: application/json" -d '{}'
 
     with requests.post(url, json={}, stream=True) as response:
@@ -91,4 +91,4 @@ def get_response():
             send_message(event)
 
 
-get_response()
+streaming_display()
