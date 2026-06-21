@@ -2,4 +2,5 @@
 images/
 .venv
 speech.wav
-voices/
+voices/logs/
+logs/
