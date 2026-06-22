@@ -136,11 +136,11 @@ crouch_started_at = None
 SMOOTHING_ALPHA = 0.45
 
 CROUCH_THRESHOLD = 28
-LIFT_THRESHOLD = 18
+LIFT_THRESHOLD = 10
 LANDING_THRESHOLD = 12
 
 JUMP_VELOCITY_THRESHOLD = 420      # pixels / second
-REBOUND_VELOCITY_THRESHOLD = 360   # pixels / second
+REBOUND_VELOCITY_THRESHOLD = 300   # pixels / second
 
 COOLDOWN_SECONDS = 0.25
 CROUCH_MAX_SECONDS = 0.7
@@ -171,6 +171,9 @@ def smooth_y(current_y):
         )
 
     return smoothed_y
+
+def can_press_space(now):
+    return now - last_jump_time >= COOLDOWN_SECONDS
 
 def press_space():
     pyautogui.press("space")
@@ -254,8 +257,9 @@ def update_jump_detector(current_raw_y):
     rebounding_up = velocity_y > REBOUND_VELOCITY_THRESHOLD
     landed = current_y > baseline_y - LANDING_THRESHOLD
 
-    if now - last_jump_time < COOLDOWN_SECONDS:
-        return
+    # if now - last_jump_time < COOLDOWN_SECONDS:
+    #     print("Blocked by cooldown")
+    #     return
 
     if game_state == "IDLE":
         # Slowly adapt baseline only when the player is stable.
@@ -268,18 +272,24 @@ def update_jump_detector(current_raw_y):
             return
 
         if moving_up_fast and is_lifted:
-            press_space()
-            last_jump_time = now
-            game_state = "JUMPING"
-            print("Jump: direct lift")
+            if can_press_space(now):
+                press_space()
+                last_jump_time = now
+                game_state = "JUMPING"
+                print(f"Jump: direct lift, velocity={velocity_y:.1f}, y={current_y:.1f}, baseline={baseline_y:.1f}")
+            else:
+                print("Jump ignored: cooldown")
             return
 
     elif game_state == "CROUCHING":
         if rebounding_up:
-            press_space()
-            last_jump_time = now
-            game_state = "JUMPING"
-            print("Jump: crouch rebound")
+            if can_press_space(now):
+                press_space()
+                last_jump_time = now
+                game_state = "JUMPING"
+                print(f"Jump: crouch rebound, velocity={velocity_y:.1f}, y={current_y:.1f}, baseline={baseline_y:.1f}")
+            else:
+                print("Jump ignored: cooldown")
             return
 
         if crouch_started_at is not None and now - crouch_started_at > CROUCH_MAX_SECONDS:
@@ -294,6 +304,7 @@ def update_jump_detector(current_raw_y):
 
     elif game_state == "COOLDOWN":
         if now - last_jump_time >= COOLDOWN_SECONDS:
+
             game_state = "IDLE"
             return
 
