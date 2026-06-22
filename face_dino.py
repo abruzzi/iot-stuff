@@ -3,6 +3,7 @@ import mediapipe as mp
 from collections import deque, Counter
 import time
 
+from logger import debug_log, close_logger
 from playwright_controller import open_dino
 
 # -----------------------------
@@ -139,11 +140,11 @@ crouch_started_at = None
 SMOOTHING_ALPHA = 0.45
 
 CROUCH_THRESHOLD = 28
-LIFT_THRESHOLD = 10
 LANDING_THRESHOLD = 12
 
-JUMP_VELOCITY_THRESHOLD = 420      # pixels / second
-REBOUND_VELOCITY_THRESHOLD = 300   # pixels / second
+JUMP_VELOCITY_THRESHOLD = 320      # pixels / second
+REBOUND_VELOCITY_THRESHOLD = 260   # pixels / second
+LIFT_THRESHOLD = 6
 
 COOLDOWN_SECONDS = 0.25
 CROUCH_MAX_SECONDS = 0.7
@@ -178,9 +179,40 @@ def smooth_y(current_y):
 def can_press_space(now):
     return now - last_jump_time >= COOLDOWN_SECONDS
 
-def press_space():
-    if dino_controller is not None:
-        dino_controller.jump()
+
+LOG_AFTER_JUMP = False
+CHECK_JUMP_RESULT = True
+
+def press_space(reason=None):
+    if dino_controller is None:
+        return
+
+    before = dino_controller.read_state()
+    obstacle = before.get("obstacle")
+
+    debug_log(
+        "game",
+        "before_jump",
+        reason=reason,
+        jumping=before["jumping"],
+        ducking=before["ducking"],
+        speed=round(before["speed"], 2),
+        obstacle_type=obstacle["type"] if obstacle else None,
+        distance=round(obstacle["distance"], 1) if obstacle else None,
+    )
+
+    dino_controller.jump()
+
+    if CHECK_JUMP_RESULT:
+        time.sleep(0.03)
+        after = dino_controller.read_state()
+        debug_log(
+            "game",
+            "jump_result",
+            reason=reason,
+            jumping=after["jumping"],
+            trexY=round(after["trexY"], 1),
+        )
 
 def update_ready_state(stable_gesture):
     global game_state, ready_started_at
@@ -217,6 +249,7 @@ def update_jump_detector(current_raw_y):
         if calibration_started_at is None:
             calibration_started_at = now
             calibration_samples = []
+            debug_log("camera", "calibration_started")
             print("Calibrating... stand still.")
 
         calibration_samples.append(current_y)
@@ -226,6 +259,15 @@ def update_jump_detector(current_raw_y):
             last_y = current_y
             last_time = now
             game_state = "IDLE"
+
+            debug_log(
+                "camera",
+                "calibration_done",
+                game_state=game_state,
+                y=round(current_y, 1),
+                baseline=round(baseline_y, 1),
+            )
+
             print(f"Calibration done. baseline_y={baseline_y:.1f}")
 
         return
@@ -246,6 +288,14 @@ def update_jump_detector(current_raw_y):
     if dt <= 0 or dt > 0.3:
         last_y = current_y
         last_time = now
+
+        debug_log(
+            "camera",
+            "frame_gap_ignored",
+            game_state=game_state,
+            dt=round(dt, 3),
+        )
+
         return
 
     # screen y: smaller = higher
@@ -261,10 +311,6 @@ def update_jump_detector(current_raw_y):
     rebounding_up = velocity_y > REBOUND_VELOCITY_THRESHOLD
     landed = current_y > baseline_y - LANDING_THRESHOLD
 
-    # if now - last_jump_time < COOLDOWN_SECONDS:
-    #     print("Blocked by cooldown")
-    #     return
-
     if game_state == "IDLE":
         # Slowly adapt baseline only when the player is stable.
         if abs(velocity_y) < 80 and not is_crouching and not is_lifted:
@@ -273,30 +319,121 @@ def update_jump_detector(current_raw_y):
         if is_crouching:
             game_state = "CROUCHING"
             crouch_started_at = now
+
+            debug_log(
+                "camera",
+                "crouching",
+                game_state=game_state,
+                y=round(current_y, 1),
+                baseline=round(baseline_y, 1),
+                velocity=round(velocity_y, 1),
+            )
+
             return
 
         if moving_up_fast and is_lifted:
+            debug_log(
+                "camera",
+                "jump_candidate",
+                reason="direct_lift",
+                game_state=game_state,
+                y=round(current_y, 1),
+                baseline=round(baseline_y, 1),
+                velocity=round(velocity_y, 1),
+                cooldown=round(now - last_jump_time, 3),
+            )
+
             if can_press_space(now):
-                press_space()
+                press_space(reason="direct_lift")
                 last_jump_time = now
                 game_state = "JUMPING"
-                print(f"Jump: direct lift, velocity={velocity_y:.1f}, y={current_y:.1f}, baseline={baseline_y:.1f}")
+
+                debug_log(
+                    "camera",
+                    "jump_triggered",
+                    reason="direct_lift",
+                    game_state=game_state,
+                    y=round(current_y, 1),
+                    baseline=round(baseline_y, 1),
+                    velocity=round(velocity_y, 1),
+                )
+
+                print(
+                    f"Jump: direct lift, velocity={velocity_y:.1f}, "
+                    f"y={current_y:.1f}, baseline={baseline_y:.1f}"
+                )
             else:
+                debug_log(
+                    "camera",
+                    "jump_blocked",
+                    reason="cooldown",
+                    game_state=game_state,
+                    cooldown=round(now - last_jump_time, 3),
+                )
+
                 print("Jump ignored: cooldown")
+
             return
 
     elif game_state == "CROUCHING":
         if rebounding_up:
+            debug_log(
+                "camera",
+                "jump_candidate",
+                reason="crouch_rebound",
+                game_state=game_state,
+                y=round(current_y, 1),
+                baseline=round(baseline_y, 1),
+                velocity=round(velocity_y, 1),
+                crouch_for=round(now - crouch_started_at, 3)
+                if crouch_started_at is not None
+                else None,
+                cooldown=round(now - last_jump_time, 3),
+            )
+
             if can_press_space(now):
-                press_space()
+                press_space(reason="crouch_rebound")
                 last_jump_time = now
                 game_state = "JUMPING"
-                print(f"Jump: crouch rebound, velocity={velocity_y:.1f}, y={current_y:.1f}, baseline={baseline_y:.1f}")
+
+                debug_log(
+                    "camera",
+                    "jump_triggered",
+                    reason="crouch_rebound",
+                    game_state=game_state,
+                    y=round(current_y, 1),
+                    baseline=round(baseline_y, 1),
+                    velocity=round(velocity_y, 1),
+                )
+
+                print(
+                    f"Jump: crouch rebound, velocity={velocity_y:.1f}, "
+                    f"y={current_y:.1f}, baseline={baseline_y:.1f}"
+                )
             else:
+                debug_log(
+                    "camera",
+                    "jump_blocked",
+                    reason="cooldown",
+                    game_state=game_state,
+                    cooldown=round(now - last_jump_time, 3),
+                )
+
                 print("Jump ignored: cooldown")
+
             return
 
         if crouch_started_at is not None and now - crouch_started_at > CROUCH_MAX_SECONDS:
+            debug_log(
+                "camera",
+                "crouch_timeout",
+                game_state=game_state,
+                y=round(current_y, 1),
+                baseline=round(baseline_y, 1),
+                velocity=round(velocity_y, 1),
+                crouch_for=round(now - crouch_started_at, 3),
+            )
+
             game_state = "IDLE"
             crouch_started_at = None
             return
@@ -304,12 +441,29 @@ def update_jump_detector(current_raw_y):
     elif game_state == "JUMPING":
         if landed:
             game_state = "COOLDOWN"
+
+            debug_log(
+                "camera",
+                "landed",
+                game_state=game_state,
+                y=round(current_y, 1),
+                baseline=round(baseline_y, 1),
+                velocity=round(velocity_y, 1),
+            )
+
             return
 
     elif game_state == "COOLDOWN":
         if now - last_jump_time >= COOLDOWN_SECONDS:
-
             game_state = "IDLE"
+
+            debug_log(
+                "camera",
+                "cooldown_done",
+                game_state=game_state,
+                cooldown=round(now - last_jump_time, 3),
+            )
+
             return
 
 # -----------------------------
@@ -394,6 +548,11 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
+frame_count = 0
+fps_started_at = time.time()
+
+was_crashed = False
+
 while True:
     ret, frame = cap.read()
 
@@ -424,6 +583,18 @@ while True:
     else:
         recent_gestures.append("NO_HAND")
 
+    frame_count += 1
+
+    now = time.time()
+    if now - fps_started_at >= 2:
+        debug_log(
+            "camera",
+            "fps",
+            fps=round(frame_count / (now - fps_started_at), 1),
+        )
+        frame_count = 0
+        fps_started_at = now        
+
     if game_state == "WAITING_FOR_READY":
         update_ready_state(stable_gesture)
     else:
@@ -438,6 +609,24 @@ while True:
 
     draw_debug_info(frame, stable_gesture=stable_gesture)
 
+    if dino_controller is not None:
+        crashed, game_snapshot = dino_controller.is_crashed()
+
+        if crashed and not was_crashed:
+            obstacle = game_snapshot.get("obstacle")
+
+            debug_log(
+                "game",
+                "crashed",
+                jumping=game_snapshot["jumping"],
+                ducking=game_snapshot["ducking"],
+                speed=round(game_snapshot["speed"], 2),
+                obstacle_type=obstacle["type"] if obstacle else None,
+                distance=round(obstacle["distance"], 1) if obstacle else None,
+            )
+
+        was_crashed = crashed
+
     cv2.imshow("Dino Jump Controller", frame)
 
     key = cv2.waitKey(1) & 0xFF
@@ -450,6 +639,7 @@ while True:
         print("Reset to WAITING_FOR_READY")
         game_state = "WAITING_FOR_READY"
         ready_started_at = None
+        was_crashed = False
         reset_jump_detector()
 
 cap.release()
@@ -460,3 +650,5 @@ face_detection.close()
 
 browser.close()
 playwright.stop()
+
+close_logger()
