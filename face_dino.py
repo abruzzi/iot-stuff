@@ -2,7 +2,8 @@ import cv2
 import mediapipe as mp
 from collections import deque, Counter
 import time
-import pyautogui
+
+from playwright_controller import open_dino
 
 # -----------------------------
 # MediaPipe setup
@@ -117,6 +118,8 @@ def get_face_center_y(frame, face_results):
 # Game state
 # -----------------------------
 
+dino_controller = None
+
 game_state = "WAITING_FOR_READY"
 
 ready_started_at = None
@@ -176,7 +179,8 @@ def can_press_space(now):
     return now - last_jump_time >= COOLDOWN_SECONDS
 
 def press_space():
-    pyautogui.press("space")
+    if dino_controller is not None:
+        dino_controller.jump()
 
 def update_ready_state(stable_gesture):
     global game_state, ready_started_at
@@ -381,6 +385,8 @@ def draw_debug_info(frame, current_y=None, stable_gesture=None):
 # Main loop
 # -----------------------------
 
+playwright, browser, page, dino_controller = open_dino()
+
 cap = cv2.VideoCapture(0)
 
 # Lower resolution usually means lower latency.
@@ -451,3 +457,6 @@ cv2.destroyAllWindows()
 
 hands.close()
 face_detection.close()
+
+browser.close()
+playwright.stop()
