@@ -1,14 +1,6 @@
 import cv2
 import mediapipe as mp
-import subprocess
-import tempfile
-import os
-import time
 from collections import deque, Counter
-
-PIPER_MODEL = "voices/en_US-libritts-high.onnx"
-
-AUDIO_PLAYER = "afplay"
 
 SPEAK_COOLDOWN = 1.5
 
@@ -26,34 +18,9 @@ hands = mp_hands.Hands(
     min_tracking_confidence=0.7,
 )
 
-
-def speak(text):
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        output_path = f.name
-
-    try:
-        subprocess.run(
-            [
-                "piper",
-                "--model",
-                PIPER_MODEL,
-                "--output_file",
-                output_path,
-            ],
-            input=text.encode("utf-8"),
-            check=True,
-        )
-
-        subprocess.run([AUDIO_PLAYER, output_path], check=True)
-    finally:
-        if os.path.exists(output_path):
-            os.remove(output_path)
-
-
 def is_finger_up(landmarks, tip_id, pip_id):
     # In image coordinates, smaller y means higher on screen.
     return landmarks[tip_id].y < landmarks[pip_id].y
-
 
 def classify_gesture(hand_landmarks):
     landmarks = hand_landmarks.landmark
@@ -95,29 +62,6 @@ def get_stable_gesture():
 
     return None
 
-
-def speak_gesture_if_needed(gesture):
-    global last_spoken_gesture
-    global last_spoken_time
-
-    if gesture is None or gesture == "UNKNOWN":
-        return
-
-    now = time.time()
-
-    if gesture == last_spoken_gesture:
-        return
-
-    if now - last_spoken_time < SPEAK_COOLDOWN:
-        return
-
-    print("Speaking:", gesture)
-    speak(f"I see {gesture.lower().replace('_', ' ')}")
-
-    last_spoken_gesture = gesture
-    last_spoken_time = now
-
-
 cap = cv2.VideoCapture(0)
 
 while True:
@@ -140,7 +84,7 @@ while True:
         recent_gestures.append(current_gesture)
 
         stable_gesture = get_stable_gesture()
-        speak_gesture_if_needed(stable_gesture)
+        print(stable_gesture)
 
         mp_draw.draw_landmarks(
             frame,

@@ -1,18 +1,84 @@
 import cv2
 import mediapipe as mp
-from collections import deque
+from collections import deque, Counter
 import time
 import pyautogui
+
+# -----------------------------
+# MediaPipe setup
+# -----------------------------
 
 mp_face_detection = mp.solutions.face_detection
 face_detection = mp_face_detection.FaceDetection(
     model_selection=0,
-    min_detection_confidence=0.6
+    min_detection_confidence=0.6,
 )
+
+mp_hands = mp.solutions.hands
+mp_draw = mp.solutions.drawing_utils
+
+hands = mp_hands.Hands(
+    max_num_hands=1,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.7,
+)
+
+# -----------------------------
+# Gesture detection
+# -----------------------------
+
+recent_gestures = deque(maxlen=5)
+
+def is_finger_up(landmarks, tip_id, pip_id):
+    # In image coordinates, smaller y means higher on screen.
+    return landmarks[tip_id].y < landmarks[pip_id].y
+
+def classify_gesture(hand_landmarks):
+    landmarks = hand_landmarks.landmark
+
+    index_up = is_finger_up(landmarks, 8, 6)
+    middle_up = is_finger_up(landmarks, 12, 10)
+    ring_up = is_finger_up(landmarks, 16, 14)
+    pinky_up = is_finger_up(landmarks, 20, 18)
+
+    fingers = [index_up, middle_up, ring_up, pinky_up]
+    count = sum(fingers)
+
+    if count == 0:
+        return "FIST"
+
+    if count == 1 and index_up:
+        return "ONE"
+
+    if count == 2 and index_up and middle_up:
+        return "TWO"
+
+    if count == 3 and index_up and middle_up and ring_up:
+        return "THREE"
+
+    if count == 4:
+        return "OPEN_HAND"
+
+    return "UNKNOWN"
+
+def get_stable_gesture():
+    if len(recent_gestures) < recent_gestures.maxlen:
+        return None
+
+    gesture, count = Counter(recent_gestures).most_common(1)[0]
+
+    if count >= 4:
+        return gesture
+
+    return None
+
+# -----------------------------
+# Face detection
+# -----------------------------
 
 recent_face_detections = deque(maxlen=5)
 
-def is_face_stably_detected(recent_face_detections):
+def is_face_stably_detected():
     return sum(recent_face_detections) >= 2
 
 def get_largest_detection(detections, frame_width, frame_height):
@@ -22,16 +88,43 @@ def get_largest_detection(detections, frame_width, frame_height):
 
     return max(detections, key=area)
 
+def get_face_center_y(frame, face_results):
+    h_img, w_img, _ = frame.shape
+
+    face_detected = bool(face_results.detections)
+    recent_face_detections.append(face_detected)
+
+    if not is_face_stably_detected():
+        return None, None
+
+    if not face_results.detections:
+        return None, None
+
+    detection = get_largest_detection(face_results.detections, w_img, h_img)
+    bbox = detection.location_data.relative_bounding_box
+
+    x = int(bbox.xmin * w_img)
+    y = int(bbox.ymin * h_img)
+    w = int(bbox.width * w_img)
+    h = int(bbox.height * h_img)
+
+    center_y = int(y + h / 2)
+    box = (x, y, w, h)
+
+    return center_y, box
 
 # -----------------------------
-# Jump detector state
+# Game state
 # -----------------------------
 
-state = "CALIBRATING"
+game_state = "WAITING_FOR_READY"
 
+ready_started_at = None
+READY_HOLD_SECONDS = 2.0
+
+calibration_started_at = None
 calibration_samples = []
 CALIBRATION_SECONDS = 2.0
-calibration_started_at = None
 
 baseline_y = None
 smoothed_y = None
@@ -42,18 +135,29 @@ crouch_started_at = None
 
 SMOOTHING_ALPHA = 0.45
 
-# 这些阈值是像素值，先按 720p/1080p 摄像头大概调
-CROUCH_THRESHOLD = 28       # 脸比 baseline 低多少，认为是下蹲
-LIFT_THRESHOLD = 18         # 脸比 baseline 高多少，认为已经抬起
-LANDING_THRESHOLD = 12      # 回到 baseline 附近，认为落地
+CROUCH_THRESHOLD = 28
+LIFT_THRESHOLD = 18
+LANDING_THRESHOLD = 12
 
-# 速度单位：pixels / second
-JUMP_VELOCITY_THRESHOLD = 420
-REBOUND_VELOCITY_THRESHOLD = 360
+JUMP_VELOCITY_THRESHOLD = 420      # pixels / second
+REBOUND_VELOCITY_THRESHOLD = 360   # pixels / second
 
-COOLDOWN_SECONDS = 0.20
+COOLDOWN_SECONDS = 0.25
 CROUCH_MAX_SECONDS = 0.7
 
+def reset_jump_detector():
+    global calibration_started_at, calibration_samples
+    global baseline_y, smoothed_y, last_y, last_time
+    global last_jump_time, crouch_started_at
+
+    calibration_started_at = None
+    calibration_samples = []
+    baseline_y = None
+    smoothed_y = None
+    last_y = None
+    last_time = None
+    last_jump_time = 0
+    crouch_started_at = None
 
 def smooth_y(current_y):
     global smoothed_y
@@ -68,63 +172,82 @@ def smooth_y(current_y):
 
     return smoothed_y
 
-
 def press_space():
     pyautogui.press("space")
 
-
-def detect_jump(current_face_center_y):
-    global state
-    global calibration_started_at, calibration_samples
-    global baseline_y, last_y, last_time, last_jump_time
-    global crouch_started_at
+def update_ready_state(stable_gesture):
+    global game_state, ready_started_at
 
     now = time.time()
-    current_y = smooth_y(current_face_center_y)
 
-    if last_y is None or last_time is None:
-        last_y = current_y
-        last_time = now
-        return False
+    if stable_gesture == "OPEN_HAND":
+        if ready_started_at is None:
+            ready_started_at = now
 
-    dt = now - last_time
+        held_for = now - ready_started_at
 
-    # 避免极端情况：卡顿、暂停、debug 停住之后产生奇怪 velocity
-    if dt <= 0 or dt > 0.3:
-        last_y = current_y
-        last_time = now
-        return False
+        if held_for >= READY_HOLD_SECONDS:
+            print("Ready gesture detected. Start calibration.")
+            reset_jump_detector()
+            game_state = "CALIBRATING"
+            ready_started_at = None
+    else:
+        ready_started_at = None
 
-    # 屏幕坐标：y 越小，位置越高
-    # 所以 last_y - current_y > 0 表示向上移动
-    velocity_y = (last_y - current_y) / dt
+def update_jump_detector(current_raw_y):
+    global game_state
+    global calibration_started_at, calibration_samples
+    global baseline_y, last_y, last_time
+    global last_jump_time, crouch_started_at
 
-    last_y = current_y
-    last_time = now
+    now = time.time()
+    current_y = smooth_y(current_raw_y)
 
     # -----------------------------
     # Calibration
     # -----------------------------
-    if state == "CALIBRATING":
+    if game_state == "CALIBRATING":
         if calibration_started_at is None:
             calibration_started_at = now
             calibration_samples = []
+            print("Calibrating... stand still.")
 
         calibration_samples.append(current_y)
 
         if now - calibration_started_at >= CALIBRATION_SECONDS:
             baseline_y = sum(calibration_samples) / len(calibration_samples)
-            state = "IDLE"
+            last_y = current_y
+            last_time = now
+            game_state = "IDLE"
             print(f"Calibration done. baseline_y={baseline_y:.1f}")
 
-        return False
+        return
+
+    if game_state not in ["IDLE", "CROUCHING", "JUMPING", "COOLDOWN"]:
+        return
 
     if baseline_y is None:
-        return False
+        return
 
-    # -----------------------------
-    # Derived signals
-    # -----------------------------
+    if last_y is None or last_time is None:
+        last_y = current_y
+        last_time = now
+        return
+
+    dt = now - last_time
+
+    if dt <= 0 or dt > 0.3:
+        last_y = current_y
+        last_time = now
+        return
+
+    # screen y: smaller = higher
+    # positive velocity = moving up
+    velocity_y = (last_y - current_y) / dt
+
+    last_y = current_y
+    last_time = now
+
     is_crouching = current_y > baseline_y + CROUCH_THRESHOLD
     is_lifted = current_y < baseline_y - LIFT_THRESHOLD
     moving_up_fast = velocity_y > JUMP_VELOCITY_THRESHOLD
@@ -132,61 +255,53 @@ def detect_jump(current_face_center_y):
     landed = current_y > baseline_y - LANDING_THRESHOLD
 
     if now - last_jump_time < COOLDOWN_SECONDS:
-        return False
+        return
 
-    # -----------------------------
-    # State machine
-    # -----------------------------
-    if state == "IDLE":
-        # 只有人比较稳定时，慢慢更新 baseline
-        # 这样她站的位置轻微变化时，系统可以适应
+    if game_state == "IDLE":
+        # Slowly adapt baseline only when the player is stable.
         if abs(velocity_y) < 80 and not is_crouching and not is_lifted:
             baseline_y = baseline_y * 0.98 + current_y * 0.02
 
-        # 先蹲下，进入 armed 状态
         if is_crouching:
-            state = "CROUCHING"
+            game_state = "CROUCHING"
             crouch_started_at = now
-            return False
+            return
 
-        # 不蹲，直接向上跳，也可以触发
         if moving_up_fast and is_lifted:
             press_space()
             last_jump_time = now
-            state = "JUMPING"
+            game_state = "JUMPING"
             print("Jump: direct lift")
-            return True
+            return
 
-    elif state == "CROUCHING":
-        # 从蹲下状态快速向上，尽早触发
+    elif game_state == "CROUCHING":
         if rebounding_up:
             press_space()
             last_jump_time = now
-            state = "JUMPING"
+            game_state = "JUMPING"
             print("Jump: crouch rebound")
-            return True
+            return
 
-        # 蹲太久就放弃，不然以后下蹲动作会一直卡在 CROUCHING
         if crouch_started_at is not None and now - crouch_started_at > CROUCH_MAX_SECONDS:
-            state = "IDLE"
+            game_state = "IDLE"
             crouch_started_at = None
-            return False
+            return
 
-    elif state == "JUMPING":
-        # 落回 baseline 附近后再允许下一次触发
+    elif game_state == "JUMPING":
         if landed:
-            state = "COOLDOWN"
-            return False
+            game_state = "COOLDOWN"
+            return
 
-    elif state == "COOLDOWN":
+    elif game_state == "COOLDOWN":
         if now - last_jump_time >= COOLDOWN_SECONDS:
-            state = "IDLE"
-            return False
+            game_state = "IDLE"
+            return
 
-    return False
+# -----------------------------
+# Debug drawing
+# -----------------------------
 
-
-def draw_debug_info(frame, current_y=None):
+def draw_debug_info(frame, current_y=None, stable_gesture=None):
     h_img, w_img, _ = frame.shape
 
     if baseline_y is not None:
@@ -195,7 +310,7 @@ def draw_debug_info(frame, current_y=None):
             (0, int(baseline_y)),
             (w_img, int(baseline_y)),
             (0, 255, 255),
-            2
+            2,
         )
 
     if current_y is not None:
@@ -204,76 +319,124 @@ def draw_debug_info(frame, current_y=None):
             (int(w_img / 2), int(current_y)),
             5,
             (255, 0, 0),
-            -1
+            -1,
         )
 
     cv2.putText(
         frame,
-        f"state: {state}",
-        (20, 40),
+        f"State: {game_state}",
+        (30, 40),
         cv2.FONT_HERSHEY_SIMPLEX,
-        1,
+        0.9,
         (0, 255, 0),
-        2
+        2,
     )
 
+    cv2.putText(
+        frame,
+        f"Gesture: {stable_gesture}",
+        (30, 80),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        (0, 255, 0),
+        2,
+    )
 
-def detect_face_from_frame(frame):
-    rgb_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = face_detection.process(rgb_img)
+    if game_state == "WAITING_FOR_READY":
+        message = "Stand ready, then open hand for 2 seconds"
+        cv2.putText(
+            frame,
+            message,
+            (30, 120),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 255),
+            2,
+        )
 
-    h_img, w_img, _ = frame.shape
+    if game_state == "CALIBRATING":
+        message = "Calibrating... stand still"
+        cv2.putText(
+            frame,
+            message,
+            (30, 120),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 255),
+            2,
+        )
 
-    face_detected = bool(results.detections)
-    recent_face_detections.append(face_detected)
+# -----------------------------
+# Main loop
+# -----------------------------
 
-    current_face_center_y = None
+cap = cv2.VideoCapture(0)
 
-    if not is_face_stably_detected(recent_face_detections):
-        draw_debug_info(frame)
-        return frame
-
-    if results.detections:
-        detection = get_largest_detection(results.detections, w_img, h_img)
-        bboxC = detection.location_data.relative_bounding_box
-
-        x = int(bboxC.xmin * w_img)
-        y = int(bboxC.ymin * h_img)
-        w = int(bboxC.width * w_img)
-        h = int(bboxC.height * h_img)
-
-        current_face_center_y = int(y + h / 2)
-
-        detect_jump(current_face_center_y)
-
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (80, 48, 230), 2)
-        cv2.circle(frame, (int(x + w / 2), current_face_center_y), 5, (255, 0, 0), -1)
-
-    draw_debug_info(frame, current_face_center_y)
-    return frame
-
-
-video_capture = cv2.VideoCapture(0)
-
-# 尽量降低延迟
-video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-video_capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+# Lower resolution usually means lower latency.
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
 while True:
-    ret, frame = video_capture.read()
+    ret, frame = cap.read()
 
-    if ret is False:
+    if not ret:
         break
 
-    frame = detect_face_from_frame(frame)
+    frame = cv2.flip(frame, 1)
 
-    preview = cv2.resize(frame, None, fx=0.8, fy=0.8)
-    cv2.imshow("Face Detection", preview)
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    if cv2.waitKey(1) & 0xFF == ord("q"):
+    hand_results = hands.process(rgb)
+    face_results = face_detection.process(rgb)
+
+    current_gesture = "NO_HAND"
+    stable_gesture = None
+
+    if hand_results.multi_hand_landmarks:
+        hand_landmarks = hand_results.multi_hand_landmarks[0]
+        current_gesture = classify_gesture(hand_landmarks)
+        recent_gestures.append(current_gesture)
+        stable_gesture = get_stable_gesture()
+
+        mp_draw.draw_landmarks(
+            frame,
+            hand_landmarks,
+            mp_hands.HAND_CONNECTIONS,
+        )
+    else:
+        recent_gestures.append("NO_HAND")
+
+    if game_state == "WAITING_FOR_READY":
+        update_ready_state(stable_gesture)
+    else:
+        current_face_center_y, box = get_face_center_y(frame, face_results)
+
+        if current_face_center_y is not None:
+            update_jump_detector(current_face_center_y)
+
+        if box is not None:
+            x, y, w, h = box
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (80, 48, 230), 2)
+
+    draw_debug_info(frame, stable_gesture=stable_gesture)
+
+    cv2.imshow("Dino Jump Controller", frame)
+
+    key = cv2.waitKey(1) & 0xFF
+
+    if key == ord("q"):
         break
 
-video_capture.release()
+    # Optional: press r to reset to waiting mode.
+    if key == ord("r"):
+        print("Reset to WAITING_FOR_READY")
+        game_state = "WAITING_FOR_READY"
+        ready_started_at = None
+        reset_jump_detector()
+
+cap.release()
 cv2.destroyAllWindows()
+
+hands.close()
 face_detection.close()
