@@ -24,6 +24,126 @@ STATE_SCRIPT = """
 }
 """
 
+OVERLAY_SCRIPT = """
+() => {
+  if (window.__dinoDebugOverlayInstalled) {
+    return;
+  }
+
+  window.__dinoDebugOverlayInstalled = true;
+
+  const gameCanvas = document.querySelector('.runner-canvas');
+
+  if (!gameCanvas) {
+    console.warn('Dino canvas not found');
+    return;
+  }
+
+  const wrapper = document.createElement('div');
+  wrapper.id = 'dino-debug-overlay';
+
+  wrapper.style.position = 'fixed';
+  wrapper.style.pointerEvents = 'none';
+  wrapper.style.zIndex = '9999';
+  wrapper.style.fontFamily = 'monospace';
+  wrapper.style.fontSize = '12px';
+  wrapper.style.color = 'red';
+
+  document.body.appendChild(wrapper);
+
+  function syncOverlayPosition() {
+    const rect = gameCanvas.getBoundingClientRect();
+
+    wrapper.style.left = rect.left + 'px';
+    wrapper.style.top = rect.top + 'px';
+    wrapper.style.width = rect.width + 'px';
+    wrapper.style.height = rect.height + 'px';
+
+    return rect;
+  }
+
+  function createBox(x, y, w, h, label, rect, color) {
+    const box = document.createElement('div');
+
+    const scaleX = rect.width / gameCanvas.width;
+    const scaleY = rect.height / gameCanvas.height;
+
+    box.style.position = 'absolute';
+    box.style.left = (x * scaleX) + 'px';
+    box.style.top = (y * scaleY) + 'px';
+    box.style.width = (w * scaleX) + 'px';
+    box.style.height = (h * scaleY) + 'px';
+    box.style.border = `2px solid ${color}`;
+    box.style.boxSizing = 'border-box';
+
+    const text = document.createElement('div');
+    text.textContent = label;
+
+    text.style.position = 'absolute';
+    text.style.left = '0px';
+    text.style.top = '-18px';
+    text.style.whiteSpace = 'nowrap';
+    text.style.color = `${color}`;
+    text.style.background = 'rgba(255, 255, 255, 0.75)';
+    text.style.padding = '1px 3px';
+    text.style.borderRadius = '3px';
+
+    box.appendChild(text);
+
+    wrapper.appendChild(box);
+  }
+
+  function draw() {
+    const runner = Runner.getInstance();
+
+    const rect = syncOverlayPosition();
+
+    wrapper.innerHTML = '';
+
+    if (!runner) {
+      requestAnimationFrame(draw);
+      return;
+    }
+
+    const trex = runner.tRex;
+
+    const trexWidth = trex.ducking ? 59 : 44;
+    const trexHeight = trex.ducking ? 25 : 47;
+
+    createBox(
+      trex.xPos,
+      trex.yPos,
+      trexWidth,
+      trexHeight,
+      `trex y=${Math.round(trex.yPos)}`,
+      rect,
+      'green'
+    );
+
+    for (const obstacle of runner.horizon.obstacles) {
+      const type = obstacle.typeConfig?.type ?? 'obstacle';
+      const width = obstacle.width;
+      const height = obstacle.height ?? obstacle.typeConfig?.height ?? 40;
+
+      createBox(
+        obstacle.xPos,
+        obstacle.yPos,
+        width,
+        height,
+        `${type} w=${Math.round(width)}`,
+        rect,
+        'red'
+      );
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  draw();
+}
+"""
+
+
 def get_bird_action(obstacle):
     y = obstacle["y"]
 
@@ -99,16 +219,16 @@ def should_duck(state):
 def get_jump_hold_time(obstacle):
     width = obstacle["width"]
 
-    # 单个小仙人掌
     if width < 30:
         return 0.10
 
-    # 两三个仙人掌
     if width < 60:
-        return 0.16
+        return 0.22
 
-    # 很宽的连续仙人掌
-    return 0.24
+    if width < 90:
+        return 0.32
+
+    return 0.36
 
 
 def start_jump(page, hold_time):
@@ -147,9 +267,15 @@ def should_jump(state):
     ]
 
     if is_cactus:
-        # 宽仙人掌需要稍微早一点跳
-        width_bonus = max(0, width - 30) * 0.5
-        jump_distance = 45 + speed * 8 + width_bonus
+        if width < 30:
+            jump_distance = 45 + speed * 8
+        elif width < 60:
+            jump_distance = 48 + speed * 8
+        elif width < 90:
+            # 大仙人掌组：不要太早跳，主要靠更长按住 Space
+            jump_distance = 50 + speed * 8
+        else:
+            jump_distance = 55 + speed * 8
 
         if 0 < distance < jump_distance:
             return get_jump_hold_time(obstacle)
@@ -184,11 +310,21 @@ with sync_playwright() as p:
     except Error as error:
         print("Navigation error is expected for chrome://dino, continuing...")
 
-    # 等待 Dino 的 Runner 出现
     page.wait_for_function("() => typeof Runner !== 'undefined' && Runner.getInstance")
 
-    # 开始游戏
     page.keyboard.press("Space")
+
+    page.wait_for_function("""
+    () => {
+    const runner = Runner.getInstance();
+    return runner && runner.playing;
+    }
+    """)
+
+    time.sleep(0.3)
+
+    # 开始游戏
+    page.evaluate(OVERLAY_SCRIPT)
 
     is_ducking = False
     jump_release_at = None
